@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0d2552">
+  <meta name="description" content="Registro de carretas e coletores do Transbordo SELIM, Parnamirim.">
+  <title>Transbordo SELIM · Parnamirim</title>
+  <link rel="icon" href="assets/logo-parnamirim.png">
+  <link rel="stylesheet" href="styles.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <header class="site-header">
+    <div class="header-inner">
+      <img class="brand-logo" src="assets/logo-parnamirim.png" alt="Prefeitura de Parnamirim — Secretaria Municipal de Limpeza Urbana" width="585" height="122">
+      <div class="brand-copy">
+        <span class="brand-kicker">SELIM · Prefeitura de Parnamirim</span>
+        <h1>Transbordo</h1>
+        <p>Registro de carretas e coletores</p>
+      </div>
+    </div>
+  </header>
+
+  <main class="page-shell">
+    <p id="systemStatus" class="system-status" role="status" aria-live="polite">Conectando aos dados...</p>
+
+    <section class="start-section" aria-labelledby="startTitle">
+      <div class="section-heading">
+        <p class="eyebrow">O que você vai registrar?</p>
+        <h2 id="startTitle">Escolha uma opção</h2>
+      </div>
+      <div class="choice-grid">
+        <button class="choice-card" id="chooseCarretas" type="button" aria-controls="carretasSection" aria-pressed="false">
+          <span class="choice-icon" aria-hidden="true">🚛</span>
+          <span class="choice-copy"><strong>Carretas</strong><small>Saída sem peso ou retorno com peso</small></span>
+          <span class="choice-arrow" aria-hidden="true">›</span>
+        </button>
+        <button class="choice-card" id="chooseColetores" type="button" aria-controls="coletoresSection" aria-pressed="false">
+          <span class="choice-icon" aria-hidden="true">🚚</span>
+          <span class="choice-copy"><strong>Coletores / bairros</strong><small>Registrar coletor, bairro e fiscal</small></span>
+          <span class="choice-arrow" aria-hidden="true">›</span>
+        </button>
+      </div>
+    </section>
+
+    <section id="carretasSection" class="work-section" aria-labelledby="carretasTitle" hidden>
+      <div class="section-heading work-heading">
+        <p class="eyebrow">Carretas</p>
+        <h2 id="carretasTitle">Qual etapa da viagem?</h2>
+        <p>A saída é registrada sem peso. O peso é informado apenas quando a carreta voltar do aterro.</p>
+      </div>
+
+      <div class="step-tabs" role="group" aria-label="Etapa da carreta">
+        <button type="button" id="showSaida" class="step-tab active" aria-controls="saidaPanel" aria-pressed="true"><span class="step-number">1</span> Registrar saída <small>sem peso</small></button>
+        <button type="button" id="showRetorno" class="step-tab" aria-controls="retornoPanel" aria-pressed="false"><span class="step-number">2</span> Registrar retorno <small>com peso</small></button>
+      </div>
+
+      <div id="saidaPanel" class="panel">
+        <div class="panel-title-row"><h3>Saída da carreta</h3><span class="pill">Sem peso nesta etapa</span></div>
+        <p class="panel-help">Informe os dados da viagem antes da ida ao aterro. O horário será registrado automaticamente.</p>
+        <form id="saidaForm" novalidate>
+          <div class="form-grid">
+            <div class="field"><label for="saidaPlaca">Placa da carreta <span aria-hidden="true">*</span></label><select id="saidaPlaca" required><option value="">Carregando opções...</option></select><small>Confira a placa antes de salvar.</small></div>
+            <div class="field"><label for="saidaManifesto">Número do manifesto</label><input id="saidaManifesto" name="manifesto" type="text" autocomplete="off" placeholder="Se houver" maxlength="80"></div>
+            <div class="field"><label for="saidaFiscal">Fiscal responsável <span aria-hidden="true">*</span></label><select id="saidaFiscal" required><option value="">Carregando opções...</option></select></div>
+            <div class="field full"><label for="saidaObservacoes">Observações</label><textarea id="saidaObservacoes" name="observacoes" rows="2" maxlength="500" placeholder="Opcional"></textarea></div>
+          </div>
+          <div class="form-actions"><button class="primary-button" type="submit" id="saveSaida">Registrar saída sem peso</button></div>
+        </form>
+      </div>
+
+      <div id="retornoPanel" class="panel" hidden>
+        <div class="panel-title-row"><h3>Retorno da carreta</h3><span class="pill pill-yellow">Peso do comprovante</span></div>
+        <p class="panel-help">Escolha a saída registrada. Depois, informe o peso conforme o comprovante do aterro. O horário será registrado automaticamente.</p>
+        <form id="retornoForm" novalidate>
+          <div class="form-grid">
+            <div class="field full"><label for="retornoViagem">Qual carreta voltou? <span aria-hidden="true">*</span></label><select id="retornoViagem" name="viagemId" required><option value="">Carregando saídas abertas...</option></select><small id="retornoViagemHint">Selecione a saída correspondente para não registrar o retorno na carreta errada.</small></div>
+            <div class="field"><label for="retornoPeso">Peso no comprovante <span aria-hidden="true">*</span></label><input id="retornoPeso" name="peso" type="text" inputmode="decimal" autocomplete="off" placeholder="Ex.: 18500 ou 18,5" required></div>
+            <div class="field"><label for="retornoUnidade">Unidade do peso <span aria-hidden="true">*</span></label><select id="retornoUnidade" name="unidade" required><option value="kg">Quilogramas (kg)</option><option value="t">Toneladas (t)</option></select><small>Escolha a unidade escrita no comprovante.</small></div>
+            <div class="field"><label for="retornoTicket">Número do ticket / pesagem</label><input id="retornoTicket" name="ticket" type="text" autocomplete="off" placeholder="Se houver" maxlength="80"></div>
+            <div class="field"><label for="retornoFiscal">Fiscal responsável <span aria-hidden="true">*</span></label><select id="retornoFiscal" required><option value="">Carregando opções...</option></select></div>
+            <div class="field full"><label for="retornoObservacoes">Observações</label><textarea id="retornoObservacoes" name="observacoes" rows="2" maxlength="500" placeholder="Opcional"></textarea></div>
+          </div>
+          <p class="weight-preview" id="weightPreview" aria-live="polite">Peso a registrar: —</p>
+          <div class="form-actions"><button class="primary-button" type="submit" id="saveRetorno">Registrar retorno com peso</button></div>
+        </form>
+      </div>
+    </section>
+
+    <section id="coletoresSection" class="work-section" aria-labelledby="coletoresTitle" hidden>
+      <div class="section-heading work-heading">
+        <p class="eyebrow">Coletores / bairros</p>
+        <h2 id="coletoresTitle">Registrar atividade do coletor</h2>
+        <p>O horário é automático. Se souber qual carreta recebeu a carga, informe a placa ou selecione a viagem aberta.</p>
+      </div>
+      <div class="panel">
+        <form id="coletorForm" novalidate>
+          <div class="form-grid">
+            <div class="field"><label for="coletorPlaca">Placa do coletor / frota <span aria-hidden="true">*</span></label><select id="coletorPlaca" name="placaColetor" required><option value="">Selecione a placa / frota</option></select></div>
+            <div class="field"><label for="coletorBairro">Bairro <span aria-hidden="true">*</span></label><select id="coletorBairro" name="bairro" required><option value="">Selecione o bairro</option></select></div>
+            <div class="field"><label for="coletorFiscal">Fiscal responsável <span aria-hidden="true">*</span></label><select id="coletorFiscal" name="fiscal" required><option value="">Selecione o fiscal responsável</option></select></div>
+            <div class="field"><label for="coletorCarreta">Carreta que recebeu a carga</label><select id="coletorCarreta" name="placaCarreta"><option value="">Não sei / sem carreta relacionada</option></select><small>Pode ser escolhida mesmo antes da saída da carreta. Se não souber, deixe sem relação.</small></div>
+            <div class="field full"><label for="coletorViagem">Viagem da carreta (opcional)</label><select id="coletorViagem" name="viagemId"><option value="">Não sei a viagem / nenhuma viagem aberta</option></select><small>Selecione apenas se tiver certeza. A placa sozinha identifica a carreta, mas não comprova qual viagem recebeu a carga.</small></div>
+            <div class="field full"><label for="coletorObservacoes">Observações</label><textarea id="coletorObservacoes" name="observacoes" rows="2" maxlength="500" placeholder="Opcional"></textarea></div>
+          </div>
+          <p class="panel-help" id="coletorCadastroHint" role="status">Carregando placas, bairros e responsáveis cadastrados...</p>
+          <div class="form-actions"><button class="primary-button" type="submit" id="saveColetor">Registrar coletor e bairro</button></div>
+        </form>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <span>SELIM · Transbordo</span>
+    <span>Área exclusiva de registros</span>
+  </footer>
+
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  <iframe id="bridgeFrame" class="bridge-frame" title="Conexão com o banco de dados"></iframe>
+</body>
+</html>
