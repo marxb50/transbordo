@@ -25,7 +25,9 @@ const bridge = {
     if (!BRIDGE_METHODS.has(method)) throw new Error('Operação não permitida.');
     let response;
     try {
-      response = await fetch(SCRIPT_BRIDGE_URL, {
+      const endpoint = new URL(SCRIPT_BRIDGE_URL);
+      endpoint.searchParams.set('_request',window.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`);
+      response = await fetch(endpoint, {
         method: 'POST', mode: 'cors', credentials: 'omit', redirect: 'follow',
         referrerPolicy: 'no-referrer', headers: {'Content-Type':'text/plain;charset=utf-8'},
         body: JSON.stringify({public:true,method,args}), signal: AbortSignal.timeout(90000)
