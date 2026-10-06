@@ -2,7 +2,6 @@
 
 // URL /exec da implantação do clone TRANSBORDO na conta marxb50.
 const SCRIPT_BRIDGE_URL = 'https://script.google.com/macros/s/AKfycbxXOVsfgi81rqb5F_-kQY4CZwrN5XmwUSCr84E7bb3DjfdJDnrSBVkG1-W55q3MRy6n0A/exec';
-const BRIDGE_MARKER = 'selimTransbordoBridge';
 const BRIDGE_METHODS = new Set([
   'getBootstrap', 'registrarSaida', 'registrarRetorno', 'registrarColetor'
 ]);
@@ -21,73 +20,24 @@ const integerFormat = new Intl.NumberFormat('pt-BR', { maximumFractionDigits: 0 
 const percentFormat = new Intl.NumberFormat('pt-BR', { maximumFractionDigits: 1 });
 
 const bridge = {
-  frame: null,
-  ready: false,
-  origin: null,
-  remoteWindow: null,
-  session: window.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-  nextId: 1,
-  pending: new Map(),
-  waiters: [],
-
-  init() {
-    if (!/^https:\/\/script\.google\.com\/macros\/s\/[^/]+\/exec(?:[?#].*)?$/.test(SCRIPT_BRIDGE_URL)) {
-      setStatus('A conexão com a planilha ainda não foi publicada. Não é possível registrar dados.', 'error');
-      return;
-    }
-    this.frame = $('bridgeFrame');
-    window.addEventListener('message', event => this.handleMessage(event));
-    const url = new URL(SCRIPT_BRIDGE_URL);
-    url.searchParams.set('bridge', '1');
-    url.searchParams.set('bridgeSession', this.session);
-    this.frame.src = url.toString();
-    setStatus('Conectando à planilha do Transbordo...');
-  },
-
-  handleMessage(event) {
-    if (!this.frame || !event.data || event.data[BRIDGE_MARKER] !== true) return;
-    let host;
-    try { host = new URL(event.origin); } catch (_) { return; }
-    if (host.protocol !== 'https:' || !(host.hostname === 'script.google.com' || host.hostname.endsWith('.googleusercontent.com'))) return;
-    if (event.data.session !== this.session) return;
-    if (event.data.type === 'ready') {
-      this.origin = event.origin;
-      this.remoteWindow = event.source;
-      this.ready = true;
-      setStatus('Conectado à planilha do Transbordo.', 'ok');
-      this.waiters.splice(0).forEach(waiter => waiter());
-      return;
-    }
-    const pending = this.pending.get(event.data.id);
-    if (!pending) return;
-    if (event.source !== pending.window) return;
-    this.pending.delete(event.data.id);
-    clearTimeout(pending.timer);
-    if (event.data.error) pending.reject(new Error(String(event.data.error)));
-    else pending.resolve(event.data.result);
-  },
-
-  async waitUntilReady() {
-    if (this.ready) return;
-    if (!this.frame) throw new Error('A conexão com a planilha ainda não está configurada.');
-    await new Promise((resolve, reject) => {
-      const timer = window.setTimeout(() => reject(new Error('A conexão demorou para responder. Recarregue a página.')), 45000);
-      this.waiters.push(() => { clearTimeout(timer); resolve(); });
-    });
-  },
-
+  init() { setStatus('Conectando à planilha do Transbordo...'); },
   async call(method, args = []) {
     if (!BRIDGE_METHODS.has(method)) throw new Error('Operação não permitida.');
-    await this.waitUntilReady();
-    return new Promise((resolve, reject) => {
-      const id = this.nextId++;
-      const timer = window.setTimeout(() => {
-        this.pending.delete(id);
-        reject(new Error('Não foi possível confirmar a gravação. Tente novamente sem mudar os campos: o identificador do envio evita duplicidade.'));
-      }, 90000);
-      this.pending.set(id, { resolve, reject, timer, window: this.remoteWindow });
-      this.remoteWindow.postMessage({ [BRIDGE_MARKER]: true, session: this.session, id, method, args }, this.origin);
-    });
+    let response;
+    try {
+      response = await fetch(SCRIPT_BRIDGE_URL, {
+        method: 'POST', mode: 'cors', credentials: 'omit', redirect: 'follow',
+        referrerPolicy: 'no-referrer', headers: {'Content-Type':'text/plain;charset=utf-8'},
+        body: JSON.stringify({public:true,method,args}), signal: AbortSignal.timeout(90000)
+      });
+      if (!response.ok) throw new Error('Conexão indisponível.');
+      const result = await response.json();
+      if (result?.success !== true) throw new Error(result?.error || 'Não foi possível concluir.');
+      return result;
+    } catch (error) {
+      if (error.name === 'TimeoutError' || error.name === 'AbortError' || error instanceof TypeError) throw new Error('Não foi possível confirmar a conexão. Tente novamente sem mudar os campos; o identificador do envio evita duplicidade.');
+      throw error;
+    }
   }
 };
 
