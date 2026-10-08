@@ -11,13 +11,68 @@ const state = {
   mode: '',
   step: 'saida',
   openTrips: [],
-  options: { carretasPlates: [], collectorPlates: [], neighborhoods: [], fiscals: [] }
+  options: { carretasPlates: [], collectorPlates: [], neighborhoods: [], fiscals: [] },
+  bootstrapLoadedAt: null,
+  syncingQueue: false,
+  pendingReturnTripIds: new Set()
 };
 
 const $ = id => document.getElementById(id);
 const kgFormat = new Intl.NumberFormat('pt-BR', { maximumFractionDigits: 3 });
 const integerFormat = new Intl.NumberFormat('pt-BR', { maximumFractionDigits: 0 });
 const percentFormat = new Intl.NumberFormat('pt-BR', { maximumFractionDigits: 1 });
+const OFFLINE_DB_NAME = 'selim-transbordo-offline-v1';
+const OFFLINE_DB_VERSION = 1;
+let offlineDbPromise;
+
+const offlineStore = {
+  open() {
+    if (!('indexedDB' in window)) return Promise.reject(new Error('Este navegador não permite guardar envios offline.'));
+    if (offlineDbPromise) return offlineDbPromise;
+    offlineDbPromise = new Promise((resolve, reject) => {
+      const request = indexedDB.open(OFFLINE_DB_NAME, OFFLINE_DB_VERSION);
+      request.onupgradeneeded = () => {
+        const db = request.result;
+        if (!db.objectStoreNames.contains('pending')) db.createObjectStore('pending', { keyPath: 'id' });
+        if (!db.objectStoreNames.contains('meta')) db.createObjectStore('meta', { keyPath: 'key' });
+      };
+      request.onsuccess = () => {
+        request.result.onversionchange = () => request.result.close();
+        resolve(request.result);
+      };
+      request.onerror = () => reject(request.error || new Error('Não foi possível abrir o armazenamento local.'));
+      request.onblocked = () => reject(new Error('Feche outras abas do Transbordo e tente novamente.'));
+    });
+    offlineDbPromise.catch(() => { offlineDbPromise = null; });
+    return offlineDbPromise;
+  },
+  async transaction(storeName, mode, action) {
+    const db = await this.open();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(storeName, mode);
+      let result;
+      try { result = action(tx.objectStore(storeName)); }
+      catch (error) { reject(error); return; }
+      tx.oncomplete = () => resolve(result?.result);
+      tx.onerror = () => reject(tx.error || new Error('Falha ao salvar no aparelho.'));
+      tx.onabort = () => reject(tx.error || new Error('O armazenamento local foi interrompido.'));
+    });
+  },
+  put(item) { return this.transaction('pending', 'readwrite', store => store.put(item)); },
+  remove(id) { return this.transaction('pending', 'readwrite', store => store.delete(id)); },
+  list() {
+    return this.transaction('pending', 'readonly', store => store.getAll()).then(items =>
+      (items || []).sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+    );
+  },
+  async saveBootstrap(value) {
+    return this.transaction('meta', 'readwrite', store => store.put({ key: 'bootstrap', value }));
+  },
+  async loadBootstrap() {
+    const record = await this.transaction('meta', 'readonly', store => store.get('bootstrap'));
+    return record?.value || null;
+  }
+};
 
 const bridge = {
   init() { setStatus('Conectando à planilha do Transbordo...'); },
@@ -32,12 +87,31 @@ const bridge = {
         referrerPolicy: 'no-referrer', headers: {'Content-Type':'text/plain;charset=utf-8'},
         body: JSON.stringify({public:true,method,args}), signal: AbortSignal.timeout(90000)
       });
-      if (!response.ok) throw new Error('Conexão indisponível.');
-      const result = await response.json();
-      if (result?.success !== true) throw new Error(result?.error || 'Não foi possível concluir.');
+      if (!response.ok) {
+        const error = new Error('Conexão indisponível.');
+        error.retryable = response.status === 429 || response.status >= 500;
+        throw error;
+      }
+      let result;
+      try { result = await response.json(); }
+      catch (parseError) {
+        const error = new Error('A resposta do servidor não pôde ser confirmada.');
+        error.retryable = true;
+        throw error;
+      }
+      if (result?.success !== true) {
+        const error = new Error(result?.error || 'Não foi possível concluir.');
+        error.retryable = false;
+        throw error;
+      }
       return result;
     } catch (error) {
-      if (error.name === 'TimeoutError' || error.name === 'AbortError' || error instanceof TypeError) throw new Error('Não foi possível confirmar a conexão. Tente novamente sem mudar os campos; o identificador do envio evita duplicidade.');
+      if (error.retryable !== undefined) throw error;
+      if (error.name === 'TimeoutError' || error.name === 'AbortError' || error instanceof TypeError) {
+        const networkError = new Error('Não foi possível confirmar a conexão. O envio ficará guardado neste aparelho para sincronização.');
+        networkError.retryable = true;
+        throw networkError;
+      }
       throw error;
     }
   }
@@ -161,29 +235,212 @@ function renderOpenTrips() {
     const select = $(config.id);
     const former = select.value;
     select.replaceChildren(new Option(config.first, ''));
-    state.openTrips.forEach(trip => select.add(new Option(tripLabel(trip), clean(trip.id))));
+    const available = config.id === 'retornoViagem'
+      ? state.openTrips.filter(trip => !state.pendingReturnTripIds.has(clean(trip.id)))
+      : state.openTrips;
+    available.forEach(trip => select.add(new Option(tripLabel(trip), clean(trip.id))));
     if ([...select.options].some(option => option.value === former)) select.value = former;
   }
-  $('retornoViagemHint').textContent = state.openTrips.length
-    ? `${state.openTrips.length} saída(s) aguardando retorno. Confira placa e horário.`
-    : 'Nenhuma saída em aberto. Registre primeiro a saída da carreta.';
+  const availableReturns = state.openTrips.filter(trip => !state.pendingReturnTripIds.has(clean(trip.id))).length;
+  $('retornoViagemHint').textContent = availableReturns
+    ? `${availableReturns} saída(s) aguardando retorno. Confira placa e horário.`
+    : state.pendingReturnTripIds.size
+      ? 'O retorno desta saída já está aguardando sincronização neste aparelho.'
+      : 'Nenhuma saída em aberto. Registre primeiro a saída da carreta.';
+}
+
+function applyBootstrap(data, loadedAt = new Date().toISOString()) {
+  state.openTrips = Array.isArray(data.openTrips) ? data.openTrips : [];
+  state.options = data.options || state.options;
+  state.bootstrapLoadedAt = loadedAt;
+  fillSelect('saidaPlaca', state.options.carretasPlates, 'Selecione a carreta');
+  fillSelect('coletorCarreta', state.options.carretasPlates, 'Não sei / não informado');
+  fillSelect('coletorPlaca', state.options.collectorPlates, 'Selecione o coletor', data.collectorLabels);
+  fillSelect('coletorBairro', state.options.neighborhoods, 'Selecione o bairro');
+  ['saidaFiscal','retornoFiscal','coletorFiscal'].forEach(id=>fillSelect(id,state.options.fiscals,'Selecione o fiscal'));
+  if ($('coletorCadastroHint')) $('coletorCadastroHint').textContent = 'Selecione os dados cadastrados. O horário será automático.';
+  renderOpenTrips();
+}
+
+function savedBootstrapLabel() {
+  return state.bootstrapLoadedAt
+    ? new Intl.DateTimeFormat('pt-BR', { dateStyle: 'short', timeStyle: 'short', timeZone: 'America/Fortaleza' }).format(new Date(state.bootstrapLoadedAt))
+    : '';
 }
 
 async function refreshBootstrap() {
+  if (navigator.onLine === false) {
+    setStatus(state.bootstrapLoadedAt
+      ? `Sem internet. Usando as opções salvas em ${savedBootstrapLabel()}.`
+      : 'Sem internet e sem dados anteriores neste aparelho. Abra o formulário conectado pelo menos uma vez.', state.bootstrapLoadedAt ? 'offline' : 'error');
+    return;
+  }
   try {
     const result = assertResult(await bridge.call('getBootstrap'));
-    state.openTrips = Array.isArray(result.openTrips) ? result.openTrips : [];
-    state.options = result.options || state.options;
-    fillSelect('saidaPlaca', state.options.carretasPlates, 'Selecione a carreta');
-    fillSelect('coletorCarreta', state.options.carretasPlates, 'Não sei / não informado');
-    fillSelect('coletorPlaca', state.options.collectorPlates, 'Selecione o coletor', result.collectorLabels);
-    fillSelect('coletorBairro', state.options.neighborhoods, 'Selecione o bairro');
-    ['saidaFiscal','retornoFiscal','coletorFiscal'].forEach(id=>fillSelect(id,state.options.fiscals,'Selecione o fiscal'));
-    if ($('coletorCadastroHint')) $('coletorCadastroHint').textContent = 'Selecione os dados cadastrados. O horário será automático.';
-    renderOpenTrips();
+    const loadedAt = new Date().toISOString();
+    applyBootstrap(result, loadedAt);
+    await offlineStore.saveBootstrap({
+      openTrips: state.openTrips,
+      options: state.options,
+      collectorLabels: result.collectorLabels || {},
+      loadedAt
+    }).catch(() => {});
     setStatus('Conectado à planilha do Transbordo. Pronto para registrar.', 'ok');
   } catch (error) {
-    setStatus(error.message, 'error');
+    if (state.bootstrapLoadedAt) {
+      setStatus(`Não foi possível atualizar as opções. Usando os dados salvos em ${savedBootstrapLabel()}.`, 'offline');
+    } else {
+      setStatus(navigator.onLine
+        ? `${error.message} Abra novamente com internet para carregar as opções.`
+        : 'Sem internet e sem dados anteriores neste aparelho. Abra o formulário conectado pelo menos uma vez.', 'error');
+    }
+  }
+}
+
+function pendingTitle(item) {
+  const payload = item.args?.[0] || {};
+  if (item.method === 'registrarSaida') return `Saída da carreta ${payload.placaCarreta || '—'}`;
+  if (item.method === 'registrarRetorno') return `Retorno da viagem ${payload.viagemId || '—'} · ${formatKg(payload.pesoKg)}`;
+  if (item.method === 'registrarColetor') return `Coletor ${payload.placaColetor || '—'} · ${payload.bairro || 'bairro não informado'}`;
+  return 'Registro do Transbordo';
+}
+
+async function renderQueueStatus() {
+  try {
+    const items = await offlineStore.list();
+    const box = $('queueStatus');
+    if (!box) return;
+    state.pendingReturnTripIds = new Set(items
+      .filter(item => item.method === 'registrarRetorno')
+      .map(item => clean(item.args?.[0]?.viagemId))
+      .filter(Boolean));
+    renderOpenTrips();
+    box.hidden = items.length === 0;
+    const waiting = items.length;
+    const attention = items.filter(item => item.needsAttention).length;
+    const message = $('queueMessage');
+    if (message && waiting) {
+      message.textContent = attention
+        ? `${waiting} registro(s) ainda estão somente neste aparelho; ${attention} precisa(m) de conferência porque o servidor recusou o envio. Nada foi apagado.`
+        : `${waiting} registro(s) aguardam envio. Ainda não aparecem na planilha nem nos relatórios do Admin.`;
+    }
+    const button = $('syncPending');
+    if (button) {
+      button.hidden = !navigator.onLine || waiting === 0;
+      button.disabled = state.syncingQueue;
+      button.textContent = state.syncingQueue ? 'Enviando...' : 'Sincronizar agora';
+    }
+    const list = $('pendingList');
+    if (list) {
+      list.replaceChildren(...items.map(item => {
+        const row = document.createElement('li');
+        const title = document.createElement('strong');
+        title.textContent = pendingTitle(item);
+        const date = document.createElement('small');
+        date.textContent = `Guardado em ${formatDateTime(item.createdAt)}`;
+        row.append(title, date);
+        if (item.needsAttention) {
+          const problem = document.createElement('span');
+          problem.className = 'pending-error';
+          problem.textContent = `Conferir com a SELIM: ${item.lastError || 'o servidor não aceitou este registro.'}`;
+          row.append(problem);
+        }
+        return row;
+      }));
+    }
+  } catch (error) {
+    const box = $('queueStatus');
+    if (box) box.hidden = false;
+    const message = $('queueMessage');
+    if (message) message.textContent = error.message || 'Não foi possível consultar os envios guardados neste aparelho.';
+  }
+}
+
+async function storePending(method, payload) {
+  await offlineStore.put({
+    id: payload.clientRequestId,
+    method,
+    args: [{ ...payload }],
+    createdAt: new Date().toISOString(),
+    needsAttention: false
+  });
+  await renderQueueStatus();
+}
+
+async function syncPendingQueue({ manual = false } = {}) {
+  if (state.syncingQueue || !navigator.onLine) {
+    await renderQueueStatus();
+    return;
+  }
+  state.syncingQueue = true;
+  await renderQueueStatus();
+  let sent = 0;
+  let problem = null;
+  try {
+    const items = await offlineStore.list();
+    for (const item of items) {
+      if (item.needsAttention && !manual) continue;
+      try {
+        await bridge.call(item.method, item.args);
+        await offlineStore.remove(item.id);
+        sent += 1;
+      } catch (error) {
+        if (!error.retryable) {
+          item.needsAttention = true;
+          item.lastError = error.message;
+          item.lastAttemptAt = new Date().toISOString();
+          await offlineStore.put(item);
+          problem = { type: 'rejected', error };
+        } else {
+          problem = { type: 'network', error };
+        }
+        break;
+      }
+    }
+  } catch (error) {
+    problem = { type: 'storage', error };
+  } finally {
+    state.syncingQueue = false;
+    await renderQueueStatus();
+  }
+  if (sent) toast(`${sent} registro(s) sincronizado(s) com a planilha.`, 'success');
+  if (problem?.type === 'rejected') {
+    toast('Um registro precisa de conferência: o servidor não o aceitou e ele continua salvo neste aparelho.', 'error');
+  } else if (problem?.type === 'network') {
+    setStatus('Conexão instável. Os registros pendentes continuam salvos neste aparelho.', 'offline');
+  } else if (problem?.type === 'storage') {
+    toast(problem.error.message || 'Falha ao acessar os registros pendentes.', 'error');
+  }
+  if (sent) await refreshBootstrap();
+}
+
+async function sendOrQueue({ form, payload, method, button, loadingText, successText, onComplete }) {
+  setFormBusy(form, button, true, loadingText);
+  try {
+    if (navigator.onLine === false) {
+      await storePending(method, payload);
+      onComplete();
+      toast('Sem internet: registro guardado neste aparelho. Ele será enviado quando a conexão voltar.', 'pending');
+      return;
+    }
+    try {
+      await bridge.call(method, [payload]);
+      await offlineStore.remove(payload.clientRequestId).catch(() => {});
+      await renderQueueStatus();
+      onComplete();
+      toast(successText, 'success');
+      await refreshBootstrap();
+      syncPendingQueue();
+    } catch (error) {
+      if (!error.retryable) throw error;
+      await storePending(method, payload);
+      onComplete();
+      toast('Não foi possível confirmar o envio. O registro ficou salvo neste aparelho com o mesmo identificador para evitar duplicidade.', 'pending');
+    }
+  } catch (error) {
+    toast(error.message || 'Não foi possível guardar o registro. Mantenha os dados preenchidos e tente novamente.', 'error');
+  } finally {
+    setFormBusy(form, button, false);
   }
 }
 
@@ -239,17 +496,15 @@ async function saveSaida(event) {
   if (!payload.placaCarreta || !payload.fiscal) return toast('Informe a placa e o fiscal.', 'error');
   if (!window.confirm(`Confirmar saída da carreta ${payload.placaCarreta} SEM peso?\nO peso será informado somente no retorno.`)) return;
   payload.clientRequestId = requestIdFor(form, payload);
-  const button = $('saveSaida');
-  setFormBusy(form, button, true, 'Registrando saída...');
-  try {
-    assertResult(await bridge.call('registrarSaida', [payload]));
+  await sendOrQueue({
+    form, payload, method: 'registrarSaida', button: $('saveSaida'), loadingText: 'Registrando saída...',
+    successText: `Saída da carreta ${payload.placaCarreta} registrada.`,
+    onComplete: () => {
     form.reset();
     clearRequestId(form);
     $('saidaFiscal').value = payload.fiscal;
-    toast(`Saída da carreta ${payload.placaCarreta} registrada.`, 'success');
-    await refreshBootstrap();
-  } catch (error) { toast(error.message, 'error'); }
-  finally { setFormBusy(form, button, false); }
+    }
+  });
 }
 
 async function saveRetorno(event) {
@@ -272,23 +527,40 @@ async function saveRetorno(event) {
   const originalWeight = `${clean($('retornoPeso').value)} ${$('retornoUnidade').value}`;
   if (!window.confirm(`Confirmar retorno da carreta ${plate(trip.placaCarreta)}?\nPeso digitado: ${originalWeight}\nPeso gravado: ${formatKg(kg)}\nConfira o comprovante antes de continuar.`)) return;
   payload.clientRequestId = requestIdFor(form, payload);
-  const button = $('saveRetorno');
-  setFormBusy(form, button, true, 'Registrando retorno...');
-  try {
-    assertResult(await bridge.call('registrarRetorno', [payload]));
+  await sendOrQueue({
+    form, payload, method: 'registrarRetorno', button: $('saveRetorno'), loadingText: 'Registrando retorno...',
+    successText: `Retorno de ${plate(trip.placaCarreta)} registrado com ${formatKg(kg)}.`,
+    onComplete: () => {
     form.reset();
     clearRequestId(form);
     $('retornoFiscal').value = payload.fiscal;
     updateWeightPreview();
-    toast(`Retorno de ${plate(trip.placaCarreta)} registrado com ${formatKg(kg)}.`, 'success');
-    await refreshBootstrap();
-  } catch (error) { toast(error.message, 'error'); }
-  finally { setFormBusy(form, button, false); }
+    }
+  });
 }
 
 function syncCollectorTrip() {
   const trip = state.openTrips.find(item => clean(item.id) === clean($('coletorViagem').value));
   if (trip) $('coletorCarreta').value = plate(trip.placaCarreta);
+}
+
+async function restoreCachedBootstrap() {
+  try {
+    const cached = await offlineStore.loadBootstrap();
+    if (!cached) return false;
+    applyBootstrap(cached, cached.loadedAt);
+    setStatus(navigator.onLine
+      ? `Opções salvas neste aparelho em ${savedBootstrapLabel()}. Atualizando...`
+      : `Sem internet. Usando as opções salvas em ${savedBootstrapLabel()}.`, navigator.onLine ? 'pending' : 'offline');
+    return true;
+  } catch (error) {
+    return false;
+  }
+}
+
+function registerOfflineShell() {
+  if (!('serviceWorker' in navigator)) return;
+  navigator.serviceWorker.register('./sw.js', { scope: './' }).catch(() => {});
 }
 
 async function saveColetor(event) {
@@ -313,20 +585,18 @@ async function saveColetor(event) {
   const relation = payload.placaCarreta ? `Carreta relacionada: ${payload.placaCarreta}${trip ? ' (viagem identificada)' : ' (somente placa)'}.` : 'Sem carreta relacionada.';
   if (!window.confirm(`Registrar coletor ${payload.placaColetor} no bairro ${payload.bairro}?\n${relation}`)) return;
   payload.clientRequestId = requestIdFor(form, payload);
-  const button = $('saveColetor');
-  setFormBusy(form, button, true, 'Registrando coletor...');
-  try {
-    assertResult(await bridge.call('registrarColetor', [payload]));
+  await sendOrQueue({
+    form, payload, method: 'registrarColetor', button: $('saveColetor'), loadingText: 'Registrando coletor...',
+    successText: `Coletor ${payload.placaColetor} registrado em ${payload.bairro}.`,
+    onComplete: () => {
     form.reset();
     clearRequestId(form);
     $('coletorFiscal').value = payload.fiscal;
-    toast(`Coletor ${payload.placaColetor} registrado em ${payload.bairro}.`, 'success');
-    await refreshBootstrap();
-  } catch (error) { toast(error.message, 'error'); }
-  finally { setFormBusy(form, button, false); }
+    }
+  });
 }
 
-function init() {
+async function init() {
   $('chooseCarretas').addEventListener('click',()=>chooseMode('carretas'));
   $('chooseColetores').addEventListener('click',()=>chooseMode('coletores'));
   $('showSaida').addEventListener('click',()=>chooseStep('saida'));
@@ -337,7 +607,27 @@ function init() {
   $('retornoPeso').addEventListener('input',updateWeightPreview);
   $('retornoUnidade').addEventListener('change',updateWeightPreview);
   $('coletorViagem').addEventListener('change',syncCollectorTrip);
+  $('syncPending').addEventListener('click',()=>syncPendingQueue({ manual: true }));
+  window.addEventListener('offline',()=>{
+    setStatus(state.bootstrapLoadedAt
+      ? `Sem internet. Usando as opções salvas em ${savedBootstrapLabel()}. Envios serão guardados neste aparelho.`
+      : 'Sem internet e sem dados anteriores neste aparelho. Abra conectado ao menos uma vez para carregar as opções.', state.bootstrapLoadedAt ? 'offline' : 'error');
+    renderQueueStatus();
+  });
+  window.addEventListener('online',()=>{
+    setStatus('Conexão voltou. Atualizando opções e enviando registros pendentes...', 'pending');
+    refreshBootstrap();
+    syncPendingQueue();
+  });
+  registerOfflineShell();
   bridge.init();
-  refreshBootstrap();
+  await restoreCachedBootstrap();
+  if (navigator.onLine) {
+    refreshBootstrap();
+    syncPendingQueue();
+  } else {
+    refreshBootstrap();
+  }
+  renderQueueStatus();
 }
 document.addEventListener('DOMContentLoaded',init);

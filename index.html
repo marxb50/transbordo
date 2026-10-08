@@ -8,7 +8,7 @@
   <title>Transbordo SELIM · Parnamirim</title>
   <link rel="icon" href="assets/logo-parnamirim.png">
   <link rel="stylesheet" href="styles.css">
-  <script src="app.js?v=20261008-1" defer></script>
+  <script src="app.js?v=20261008-3" defer></script>
 </head>
 <body>
   <header class="site-header">
@@ -23,7 +23,18 @@
   </header>
 
   <main class="page-shell">
-    <p id="systemStatus" class="system-status" role="status" aria-live="polite">Conectando aos dados...</p>
+    <section class="connection-panel" aria-label="Estado da conexão e sincronização">
+      <p id="systemStatus" class="system-status" role="status" aria-live="polite">Conectando aos dados...</p>
+      <div id="queueStatus" class="queue-status" role="status" aria-live="polite" hidden>
+        <p id="queueMessage"></p>
+        <button id="syncPending" class="secondary-button" type="button" hidden>Sincronizar agora</button>
+        <details class="pending-details">
+          <summary>Ver registros pendentes</summary>
+          <ul id="pendingList"></ul>
+        </details>
+      </div>
+      <p class="offline-note">Para usar sem internet, abra este link conectado pelo menos uma vez neste aparelho e navegador, para carregar as placas, bairros e fiscais. Registros pendentes ficam somente neste aparelho até serem enviados; não limpe os dados do navegador nem troque de aparelho antes da confirmação.</p>
+    </section>
 
     <section class="start-section" aria-labelledby="startTitle">
       <div class="section-heading">
