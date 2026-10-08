@@ -149,7 +149,7 @@ function fillSelect(id, values, first, labels = {}) {
 }
 
 function tripLabel(trip) {
-  return `${plate(trip.placaCarreta)} · saída ${formatDateTime(trip.saidaEm)}${trip.manifesto ? ` · manifesto ${clean(trip.manifesto)}` : ''}`;
+  return `${plate(trip.placaCarreta)} · saída ${formatDateTime(trip.saidaEm)}`;
 }
 
 function renderOpenTrips() {
@@ -233,7 +233,6 @@ async function saveSaida(event) {
   if (!form.reportValidity()) return;
   const payload = {
     placaCarreta: plate($('saidaPlaca').value),
-    manifesto: clean($('saidaManifesto').value),
     fiscal: clean($('saidaFiscal').value),
     observacoes: clean($('saidaObservacoes').value)
   };
